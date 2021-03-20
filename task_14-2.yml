@@ -1,0 +1,151 @@
+- hosts: "localhost"
+  vars_files:
+          - lock.yml
+  
+  tasks:
+   - name: "launching ec2 instance"
+     ec2:
+      key_name: "myarthos1"
+      instance_type: t2.micro
+      image: "ami-0a9d27a9f4f5c0efc"
+      wait: yes
+      count: 1
+      instance_tags:
+              Name: "dockerserver"
+      state: present
+      region: "ap-south-1"
+      group_id: "sg-0088112d467d8b387"
+      aws_access_key: "{{ accesskey}}"
+      aws_secret_key: "{{ secretkey}}"
+     register: backend
+
+   - name: Add new instance to host group
+     add_host:
+      hostname: "{{ item.public_ip }}"
+      groupname: webserver
+     loop: "{{ backend.instances }}"
+
+   - name: Wait for SSH to come up
+     wait_for:
+             host: "{{ item.public_dns_name }}"
+             port: 22
+             state: started
+     loop: "{{ backend.instances }}"
+
+
+
+- hosts: webserver
+  vars_prompt:
+  - name: container_name
+    prompt: "Enter Docker Container Name :"
+    private: no
+  - name: inventory_path
+    prompt: "Enter Ansible Inventory Path: "
+    private: no
+
+  tasks:
+  - name: Configuring yum repo for Docker
+    yum_repository:
+          name: docker
+          file: docker
+          description: docker repo
+          baseurl: "https://download.docker.com/linux/centos/7/x86_64/stable"
+          gpgcheck: no
+
+  - name: Create a directory if it does not exist
+    file:
+          path: "{{ inventory_path }}"
+          state: directory
+
+  - name: Creating ansible config directory
+    file:
+          path: "/etc/ansible"
+          state: directory
+
+  - name: Creating invetory file 
+    file:
+          path: "/root/ansible/ip.txt"
+          state: touch
+
+  - name: Install Docker-ce
+    package:
+           name: 
+             - "docker-ce-18.09.1-3.el7.x86_64"
+             - python3
+           state: present
+
+  - name: Start and Enable Docker Services
+    service:
+          name: "docker"
+          state: started
+          enabled: yes
+
+  - name: Installing Docker SDK for python3
+    pip:
+          name:           
+            - docker-py
+            - ansible
+          state: present
+
+  - name: Copying ansible config file
+    copy: 
+          src: "/etc/ansible/ansible.cfg"
+          dest: "/etc/ansible/ansible.cfg"
+
+  - name: Copying docker web file
+    copy:
+          src: "docker-web.yml"
+          dest: "/root"
+  - name: Copying html file 
+    copy:
+          src: "task14-2.html"
+          dest: "/root"
+  - name: Copying ssh program
+    copy:
+          src: "/root/sshpass-1.06-9.el8.x86_64.rpm"
+          dest: "/root"
+  - name: making an excectable file
+    command: "chmod +x sshpass-1.06-9.el8.x86_64.rpm"
+    args:
+          chdir: "/root"
+  - name: Installing ssh program
+    command: "rpm -ivh sshpass-1.06-9.el8.x86_64.rpm"
+    args:
+          chdir: "/root"
+
+
+  - name: Pull Docker Image
+    docker_image:
+          name: "uditagarwal1305/sshcentos:latest"
+          source: pull
+
+  - name: "Launching {{ container_name }} container"
+    docker_container:
+          name: "{{ container_name }}"
+          image: "uditagarwal1305/sshcentos:latest"
+          state: started
+          exposed_ports:
+                  - "80"
+          ports:
+                  - "8080:80"
+          interactive: yes
+          detach: yes
+          tty: yes
+
+  - name: "Docker Container Info"
+    docker_container_info:
+         name: "{{ container_name }}"
+    register: docker_info
+
+  - debug:
+         var: docker_info.container.NetworkSettings.IPAddress
+
+  - name: "Retrieving IP dynamically and updating in the Inventory file"
+    template:
+            src: "ip.txt"
+            dest: "{{ inventory_path }}"
+
+  - name: "Running Docker web file"
+    shell: "ansible-playbook docker-web.yml"
+    args:
+            chdir: "/root"
